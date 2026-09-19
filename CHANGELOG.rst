@@ -8,6 +8,17 @@ Protego changelog
 -   **Backward-incompatible:** ``Protego.parse()`` now raises a more suitable
     ``TypeError`` instead of a ``ValueError`` when ``content`` is not a string.
 
+-   Normalized the user agent memoization key (stripped and lowercased, like
+    matching itself), so that querying the same parser with different
+    capitalizations or spellings of a user agent (e.g. ``MyBot``, ``mybot``,
+    ``MyBot/1.0``) can never cache diverging rule sets.
+
+-   Documented the record-group semantics: non-adjacent groups naming the
+    same user agent merge (``Allow``/``Disallow`` union; last valid
+    ``Crawl-delay``/``Request-rate``/``Visit-time`` wins), named groups do
+    not inherit ``*`` rules, and unknown directives end the current group
+    for grouping purposes. Added regression tests covering these behaviors.
+
 0.6.2 (2026-06-25)
 ==================
 

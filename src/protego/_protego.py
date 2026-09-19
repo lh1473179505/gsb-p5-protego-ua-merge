@@ -240,6 +240,10 @@ class Protego:
                     rule_set.visit_time = value
 
             else:
+                # An unknown directive is ignored (its following rules still
+                # apply to the current group), but, as a non-user-agent
+                # field, it makes the next user agent line start a new group
+                # (see previous_rule_field handling above).
                 self._invalid_directive_seen += 1
 
         for rule_set in self._user_agents.values():
@@ -250,6 +254,11 @@ class Protego:
         if not self._user_agents:
             return None
 
+        # Matching is case-insensitive and ignores surrounding whitespace
+        # (see _RuleSet.applies_to), so normalize the memoization key the
+        # same way to keep queries like "MyBot", "mybot" and "MyBot/1.0"
+        # from caching diverging results.
+        user_agent = user_agent.strip().lower()
         if user_agent in self._matched_rule_set:
             return self._matched_rule_set[user_agent]
         score_rule_set_pairs = (

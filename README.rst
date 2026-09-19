@@ -89,6 +89,43 @@ Using Protego with Requests_:
 .. _Requests: https://3.python-requests.org/
 
 
+.. _Record groups:
+
+Record groups
+=============
+
+A record group is one or more consecutive ``User-agent`` lines followed by
+one or more rule lines. Protego groups and merges records as follows:
+
+* Consecutive ``User-agent`` lines name the same group. A rule line ends
+  the list of names: the following ``User-agent`` line starts a new group.
+
+* Groups that name the same user agent in non-adjacent places of the same
+  ``robots.txt`` are merged, even when another group (such as the ``*``
+  group) sits between them. Their ``Allow`` and ``Disallow`` rules form a
+  union. ``Crawl-delay``, ``Request-rate`` and ``Visit-time`` are scalar:
+  the last *valid* value in file order wins, and a malformed value in a
+  later group is ignored instead of erasing an earlier valid one.
+
+* A named group never inherits rules from the ``*`` group. A user agent
+  that matches a named group uses it exclusively; ``*`` applies only when
+  no named group matches.
+
+* Unknown directives (for example ``Invalid_directive: ...``) are ignored
+  but terminate the current group for grouping purposes, so the following
+  ``User-agent`` line starts a new group instead of merging with the
+  preceding one. ``Sitemap`` and ``Host`` are site-wide directives and
+  never affect grouping. An empty ``User-agent:`` line ends the previous
+  group without merging it into the next one.
+
+* User agent names are matched case-insensitively at a token boundary, so
+  queries with a bare product token (``"mybot"``) and with a full
+  ``User-Agent`` header (``"Mozilla/5.0 (compatible; MyBot/1.0)"``)
+  resolve to the same group. The resolved group is memoized on the parser
+  instance, keyed by the stripped, lowercased query, so different
+  capitalizations cannot cache diverging results.
+
+
 Comparison
 ==========
 
@@ -222,3 +259,7 @@ Methods
 *   ``visit_time(user_agent)`` Return the visit time specified for the user
     agent as a named tuple ``VisitTime(start_time, end_time)``.
     If nothing is specified, return ``None``.
+
+    When non-adjacent record groups naming the same user agent are merged,
+    these scalar fields use the last valid value in file order; see
+    `Record groups`_.

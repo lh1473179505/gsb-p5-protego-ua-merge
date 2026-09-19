@@ -623,6 +623,175 @@ class TestProtego:
         assert not rp.can_fetch(url_foo, "BarBot")
         assert not rp.can_fetch(url_foo, "BazBot")
 
+    def test_non_adjacent_user_agent_groups_merge(self):
+        """Groups with the same user agent merge even when another group
+        (such as the wildcard group) sits between them.
+
+        Allow/Disallow rules from both groups form a union; Crawl-delay and
+        Request-rate keep the last valid value in file order; the rules of
+        the interleaved wildcard group are not inherited by the named user
+        agent.
+        """
+        content = """
+        User-agent: MyBot
+        Disallow: /a
+        Crawl-delay: 10
+
+        User-agent: *
+        Disallow: /star-only
+
+        User-agent: MyBot
+        Disallow: /b
+        Crawl-delay: 2.5
+        Request-rate: 1/5s
+        """
+        rp = Protego.parse(content=content)
+
+        # Union of Allow/Disallow rules from both MyBot groups.
+        assert not rp.can_fetch("https://site.local/a", "MyBot")
+        assert not rp.can_fetch("https://site.local/b", "MyBot")
+        # The named group does not inherit wildcard-group rules.
+        assert rp.can_fetch("https://site.local/star-only", "MyBot")
+
+        # Other bots only see the wildcard group.
+        assert not rp.can_fetch("https://site.local/star-only", "OtherBot")
+        assert rp.can_fetch("https://site.local/a", "OtherBot")
+        assert rp.can_fetch("https://site.local/b", "OtherBot")
+
+        # The last valid value in file order wins, fields are never dropped.
+        assert rp.crawl_delay("MyBot") == 2.5
+        assert rp.crawl_delay("OtherBot") is None
+        request_rate = rp.request_rate("MyBot")
+        assert request_rate is not None
+        assert (request_rate.requests, request_rate.seconds) == (1, 5)
+        assert rp.request_rate("OtherBot") is None
+
+    def test_merged_group_keeps_last_valid_rate_directives(self):
+        """A malformed Crawl-delay / Request-rate in a later merged group
+        does not erase the valid value of an earlier group, while a valid
+        later value overrides it."""
+        content = """
+        User-agent: MyBot
+        Crawl-delay: 10
+        Request-rate: 2/1m
+        User-agent: *
+        Disallow: /x
+        User-agent: MyBot
+        Crawl-delay: invalid
+        Request-rate: nonsense
+        """
+        rp = Protego.parse(content=content)
+        assert rp.crawl_delay("MyBot") == 10.0
+        request_rate = rp.request_rate("MyBot")
+        assert request_rate is not None
+        assert (request_rate.requests, request_rate.seconds) == (2, 60)
+
+        content = """
+        User-agent: MyBot
+        Crawl-delay: 10
+        Request-rate: 2/1m
+        User-agent: *
+        Disallow: /x
+        User-agent: MyBot
+        Crawl-delay: 3
+        Request-rate: 4/1h
+        """
+        rp = Protego.parse(content=content)
+        assert rp.crawl_delay("MyBot") == 3.0
+        request_rate = rp.request_rate("MyBot")
+        assert request_rate is not None
+        assert (request_rate.requests, request_rate.seconds) == (4, 3600)
+
+    def test_unknown_directive_splits_group_while_named_groups_merge(self):
+        """An unknown directive between two groups keeps the following user
+        agent line from merging with the preceding group, while non-adjacent
+        groups sharing a user agent still merge (union rules + last valid
+        rate directives)."""
+        content = """
+        User-agent: MyBot
+        Disallow: /a
+        Crawl-delay: 10
+
+        User-agent: *
+        Disallow: /star-only
+
+        Invalid_directive: /gb.html
+        Invalid_directive: /content/2/
+
+        User-agent: MyBot
+        Disallow: /b
+        Crawl-delay: 2.5
+        """
+        rp = Protego.parse(content=content)
+
+        # The wildcard group and the second MyBot group are not one group.
+        assert not rp.can_fetch("https://site.local/star-only", "OtherBot")
+        assert rp.can_fetch("https://site.local/b", "OtherBot")
+
+        # The two MyBot groups still merge.
+        assert not rp.can_fetch("https://site.local/a", "MyBot")
+        assert not rp.can_fetch("https://site.local/b", "MyBot")
+        assert rp.can_fetch("https://site.local/star-only", "MyBot")
+        assert rp.crawl_delay("MyBot") == 2.5
+
+        # The same with a different named user agent in the second group,
+        # matching test_grouping_unknown_keys from the wild.
+        content = """
+        User-agent: abc
+        Disallow: /content/2/
+        User-agent: *
+        Invalid_directive: /gb.html
+        Invalid_directive: /content/2/
+        User-agent: ia_archiver
+        Disallow: /
+        """
+        rp = Protego.parse(content=content)
+        assert rp.can_fetch("/content/2", "agent")
+        assert not rp.can_fetch("/content/2", "ia_archiver")
+
+    def test_user_agent_query_memoization_and_case(self):
+        """Repeated queries with different case and with a product token or
+        a full User-Agent header must all return stable, identical results,
+        regardless of which query fills the memoization table first."""
+        content = """
+        User-agent: MyBot
+        Disallow: /a
+        User-agent: *
+        Disallow: /star-only
+        User-agent: MyBot
+        Disallow: /b
+        Crawl-delay: 2.5
+        """
+        queries = [
+            "MyBot",
+            "mybot",
+            "MYBOT",
+            " MyBot ",
+            "MyBot/1.0",
+            "Mozilla/5.0 (compatible; MyBot/1.0)",
+        ]
+        for first in queries:
+            rp = Protego.parse(content=content)
+            order = [first] + [q for q in queries if q != first]
+            for user_agent in order:
+                assert not rp.can_fetch("https://site.local/a", user_agent)
+                assert not rp.can_fetch("https://site.local/b", user_agent)
+                assert rp.can_fetch(
+                    "https://site.local/star-only", user_agent
+                )
+                assert rp.crawl_delay(user_agent) == 2.5
+            # Only one memo entry per normalized query.
+            assert len(rp._matched_rule_set) == len(
+                {q.strip().lower() for q in queries}
+            )
+
+        # A token that only contains the name away from a token boundary
+        # scores zero and falls back to the wildcard group.
+        rp = Protego.parse(content=content)
+        assert rp.can_fetch("https://site.local/a", "notmybot")
+        assert not rp.can_fetch("https://site.local/star-only", "notmybot")
+        assert rp.crawl_delay("notmybot") is None
+
     def test_comments(self):
         content = """
         # comment 1
