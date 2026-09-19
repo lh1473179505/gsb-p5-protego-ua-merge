@@ -5,6 +5,14 @@ Protego changelog
 0.x.x (unreleased)
 ==================
 
+-   Locked down parsing of non-adjacent groups that declare the same named
+    user agent. Their ``Allow`` and ``Disallow`` rules are merged as a union,
+    while the last valid ``Crawl-delay``, ``Request-rate`` and ``Visit-time``
+    value wins. A named group now also wins over ``*`` when its product token
+    is a single character. Matched-rule-set memoization now shares cache
+    entries across equivalent case and whitespace forms of the queried user
+    agent.
+
 -   **Backward-incompatible:** ``Protego.parse()`` now raises a more suitable
     ``TypeError`` instead of a ``ValueError`` when ``content`` is not a string.
 

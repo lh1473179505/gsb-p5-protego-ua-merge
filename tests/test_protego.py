@@ -623,6 +623,150 @@ class TestProtego:
         assert not rp.can_fetch(url_foo, "BarBot")
         assert not rp.can_fetch(url_foo, "BazBot")
 
+    def test_non_adjacent_user_agent_groups_merge(self):
+        """Separated groups for the same product token form one rule set.
+
+        Allow and Disallow rules are merged as a union, while the extension
+        fields use last-valid-value-wins semantics. A named group remains
+        isolated from the wildcard group.
+        """
+        content = """
+        User-agent: MyBot
+        Disallow: /a
+        Allow: /b/exception
+        Crawl-delay: 10
+        Request-rate: 1/10s
+
+        User-agent: *
+        Disallow: /star-only
+        Crawl-delay: 30
+
+        User-agent: MyBot
+        Disallow: /b
+        Crawl-delay: 2.5
+        Request-rate: 3/15s
+        """
+        rp = Protego.parse(content=content)
+
+        assert not rp.can_fetch("https://site.local/a", "MyBot")
+        assert not rp.can_fetch("https://site.local/b", "MyBot")
+        assert rp.can_fetch("https://site.local/b/exception", "MyBot")
+        assert rp.can_fetch("https://site.local/star-only", "MyBot")
+        assert rp.crawl_delay("MyBot") == 2.5
+        req_rate = rp.request_rate("MyBot")
+        assert req_rate is not None
+        assert req_rate.requests == 3
+        assert req_rate.seconds == 15
+
+        assert rp.can_fetch("https://site.local/a", "OtherBot")
+        assert rp.can_fetch("https://site.local/b", "OtherBot")
+        assert not rp.can_fetch("https://site.local/star-only", "OtherBot")
+        assert rp.crawl_delay("OtherBot") == 30.0
+
+        # A later malformed extension value is ignored rather than erasing
+        # the last valid value from an earlier group.
+        content = """
+        User-agent: MyBot
+        Crawl-delay: 10
+        Request-rate: 1/10s
+
+        User-agent: MyBot
+        Crawl-delay: invalid
+        Request-rate: invalid
+        """
+        rp = Protego.parse(content=content)
+        assert rp.crawl_delay("MyBot") == 10.0
+        req_rate = rp.request_rate("MyBot")
+        assert req_rate is not None
+        assert req_rate.requests == 1
+        assert req_rate.seconds == 10
+
+    def test_unknown_directive_splits_group_without_breaking_merge(self):
+        """Unknown directives end a record group, but do not prevent later
+        groups for an already-seen product token from merging with it."""
+        content = """
+        User-agent: MyBot
+        Disallow: /a
+        Crawl-delay: 10
+
+        User-agent: *
+        Disallow: /star-only
+        Invalid_directive: /invalid-path
+        Unknown: value
+        User-agent: ia_archiver
+        Disallow: /ia-only
+
+        User-agent: MyBot
+        Disallow: /b
+        Crawl-delay: 2.5
+        """
+        rp = Protego.parse(content=content)
+
+        assert not rp.can_fetch("https://site.local/a", "MyBot")
+        assert not rp.can_fetch("https://site.local/b", "MyBot")
+        assert rp.can_fetch("https://site.local/star-only", "MyBot")
+        assert rp.can_fetch("https://site.local/ia-only", "MyBot")
+        assert rp.crawl_delay("MyBot") == 2.5
+
+        assert not rp.can_fetch("https://site.local/ia-only", "ia_archiver")
+        assert rp.can_fetch("https://site.local/star-only", "ia_archiver")
+        assert rp.can_fetch("https://site.local/invalid-path", "ia_archiver")
+
+        assert not rp.can_fetch("https://site.local/star-only", "OtherBot")
+        assert rp.can_fetch("https://site.local/ia-only", "OtherBot")
+        assert rp.can_fetch("https://site.local/invalid-path", "OtherBot")
+
+    def test_matching_memoization_is_stable_across_user_agent_forms(self):
+        """Case and product-version variants of a query keep selecting the
+        same most-specific named rule set instead of the wildcard group."""
+        content = """
+        User-agent: MyBot
+        Disallow: /named-only
+        Crawl-delay: 2.5
+
+        User-agent: *
+        Disallow: /star-only
+        Crawl-delay: 30
+        """
+        rp = Protego.parse(content=content)
+        matching_user_agents = (
+            "MyBot",
+            "mybot",
+            "MYBOT",
+            "MyBot/1.0",
+            "Mozilla/5.0 (compatible; MyBot/1.0)",
+        )
+
+        # Repeat the sequence to exercise both cache misses and cache hits.
+        for _ in range(2):
+            for user_agent in matching_user_agents:
+                assert rp.crawl_delay(user_agent) == 2.5
+                assert not rp.can_fetch("https://site.local/named-only", user_agent)
+                assert rp.can_fetch("https://site.local/star-only", user_agent)
+
+        # A token boundary still prevents a longer product token from
+        # matching the MyBot group, so it falls back to the wildcard group.
+        assert rp.crawl_delay("NotMyBot") == 30.0
+        assert rp.can_fetch("https://site.local/named-only", "NotMyBot")
+        assert not rp.can_fetch("https://site.local/star-only", "NotMyBot")
+
+    def test_named_user_agent_wins_over_wildcard_for_one_character_token(self):
+        """Specificity, not declaration order, decides a wildcard tie."""
+        content = """
+        User-agent: *
+        Crawl-delay: 30
+        Disallow: /star-only
+
+        User-agent: M
+        Crawl-delay: 2.5
+        Disallow: /named-only
+        """
+        rp = Protego.parse(content=content)
+
+        assert rp.crawl_delay("M/1.0") == 2.5
+        assert not rp.can_fetch("https://site.local/named-only", "M/1.0")
+        assert rp.can_fetch("https://site.local/star-only", "M/1.0")
+
     def test_comments(self):
         content = """
         # comment 1

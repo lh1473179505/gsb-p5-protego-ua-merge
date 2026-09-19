@@ -202,7 +202,9 @@ class Protego:
                 for ua in user_agents:
                     if not ua:
                         continue
-                    # See if this user agent is encountered before, if so merge these rules into it.
+                    # Non-adjacent groups that use the same normalized product
+                    # token share one rule set. Allow and Disallow are appended,
+                    # while extension setters replace the previous value.
                     rule_set = self._user_agents.get(ua, None)
                     if rule_set and rule_set not in current_rule_sets:
                         current_rule_sets.append(rule_set)
@@ -250,17 +252,30 @@ class Protego:
         if not self._user_agents:
             return None
 
-        if user_agent in self._matched_rule_set:
-            return self._matched_rule_set[user_agent]
+        # Matching is case-insensitive and ignores surrounding whitespace, so
+        # memoize under the same normalized form. This keeps query variants
+        # such as "MyBot" and "mybot" from maintaining separate cache entries.
+        normalized_user_agent = user_agent.strip().lower()
+        if normalized_user_agent in self._matched_rule_set:
+            return self._matched_rule_set[normalized_user_agent]
+        # A named match is always more specific than "*", including a named
+        # token consisting of a single character.
         score_rule_set_pairs = (
-            (rs.applies_to(user_agent), rs) for rs in self._user_agents.values()
+            (
+                rs.applies_to(normalized_user_agent),
+                rs.user_agent != "*",
+                rs,
+            )
+            for rs in self._user_agents.values()
         )
-        match_score, matched_rule_set = max(score_rule_set_pairs, key=lambda p: p[0])
+        match_score, _, matched_rule_set = max(
+            score_rule_set_pairs, key=lambda p: (p[0], p[1])
+        )
 
         if not match_score:
-            self._matched_rule_set[user_agent] = None
+            self._matched_rule_set[normalized_user_agent] = None
             return None
-        self._matched_rule_set[user_agent] = matched_rule_set
+        self._matched_rule_set[normalized_user_agent] = matched_rule_set
         return matched_rule_set
 
     def can_fetch(self, url: str, user_agent: str) -> bool:

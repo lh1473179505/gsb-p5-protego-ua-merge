@@ -212,6 +212,17 @@ Methods
     mybot/1.0)"``; a group applies when its product token appears in
     *user_agent* at a token boundary.
 
+    Record groups for the same product token do not need to be adjacent.
+    Protego merges them into one rule set: ``Allow`` and ``Disallow`` rules
+    form a union, while ``Crawl-delay``, ``Request-rate`` and ``Visit-time``
+    use last-valid-value-wins semantics. A malformed extension value is
+    ignored and leaves the previous valid value in place. A matching named
+    group takes precedence over the ``*`` group, is self-contained, and does
+    not inherit rules from the ``*`` group; the ``*`` group is only a
+    fallback for user agents without a named match.
+    Unknown directives are ignored and end the current record group, while
+    site-wide ``Sitemap`` and ``Host`` directives do not affect grouping.
+
 *   ``crawl_delay(user_agent)`` Return the crawl delay specified for the user
     agent as a float. If nothing is specified, return ``None``.
 
